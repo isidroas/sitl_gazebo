@@ -282,6 +282,7 @@ void GazeboMavlinkInterface::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf
 
   // Publish gazebo's motor_speed message
   motor_velocity_reference_pub_ = node_handle_->Advertise<mav_msgs::msgs::CommandMotorSpeed>("~/" + model_->GetName() + motor_velocity_reference_pub_topic_, 1);
+  linea_pub_ = node_handle_->Advertise<gazebo::msgs::Quaternion>("~/visualMenssage", 1);
 
 #if GAZEBO_MAJOR_VERSION >= 9
   last_time_ = world_->SimTime();
@@ -534,6 +535,7 @@ void GazeboMavlinkInterface::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf
     sonar_orientation_ = ignitionFromGazeboMath(sonar_link->GetRelativePose()).Rot();
 #endif
   }
+	link_=_model->GetChildLink("base_link");
 }
 
 // This gets called by the world update start event.
@@ -564,7 +566,8 @@ void GazeboMavlinkInterface::OnUpdate(const common::UpdateInfo&  /*_info*/) {
     pollForMAVLinkMessages();
   }
 
-  handle_control(dt);
+  //handle_control(dt);
+  handle_control_2(dt);
 
   if (received_first_actuator_) {
     mav_msgs::msgs::CommandMotorSpeed turning_velocities_msg;
@@ -1322,6 +1325,81 @@ void GazeboMavlinkInterface::handle_control(double _dt)
       }
     }
   }
+}
+
+void GazeboMavlinkInterface::handle_control_2(double _dt)
+{
+/*
+ *Entradas:
+ * - 'input_reference': Vector de 4 componentes que indica las señales de 
+ * actuación normalizadas. Su rango es (0,1). Es un miembro de la clase 
+ * y por eso no es necesario incluirlo como argumento de entrada.
+ * - '_dt': Diferencia de tiempo entre las llamadas a esta función. Este se
+ * usa para aplicar filtros.
+ */
+
+  /*** Parámetros del tiltrotor ***/
+  double ct=8.0992e-6; // Coeficiente de empuje [N/(rad/s)^2]
+  double l_z=0.25; // Distancia en el eje z desde el c.m. a los rotores [m]
+  double l_y=0.5; // Distancia en el eje y desde el c.m. a los rotores [m]
+  double omega_max=1100; // Máxima velocidad de rotación de los rotores [rad/s]
+  double cm=0; // Coeficiente de arrastre 
+
+  double omega1=input_reference_[0]*omega_max;  // Velocidad angular del rotor 1 (rango 0,1100) [rad/s]
+  double omega2=input_reference_[1]*omega_max; // Velocidad angular del rotor 2 (rango 0,1100) [rad/s]
+  double alfa1=(input_reference_[2]-0.5)*2*M_PI/2; // Ángulo del rotor 1 (rango -pi/2,pi/2) [rad]
+  double alfa2=(input_reference_[3]-0.5)*2*M_PI/2; // Ángulo del rotor 2 (rango -pi/2,pi/2) [rad]
+
+  // Filtrado de la velocidad ángular de los motores con una dinámica de
+  // primer orden con una constante de tiempo de 0.01 s. Esto modela la
+  // dinámica del conjunto ESC-motores. 
+  omega1=filtro_motor1.updateFilter(omega1,_dt);
+  omega2=filtro_motor2.updateFilter(omega2,_dt);
+
+  // Obtención de el empuje de los rotores.
+  double T1=omega1*omega1*ct; // [N]
+  double T2=omega2*omega2*ct; // [N]
+
+  // Posición de los dos rotores. Hay que tener en cuenta que en Gazebo el
+  // eje z apunta hacia arriba, al contrario que lo supuesto en las
+  // ecuaciones 
+  ignition::math::Vector3d p1(0, -l_y,l_z);  
+  ignition::math::Vector3d p2(0,l_y,l_z);
+
+  // Vector de fuerza del rotor 1. Este se halla teniendo en cuenta que
+  // gira alrededor del eje y, y por tanto, la componente en dicho eje será
+  // constante y nula.  
+  double Fx1=-T1*sin(alfa1); // Componente en el eje x 
+  double Fz1=T1*cos(alfa1); // Componente en el eje z
+  ignition::math::Vector3d f1(Fx1,0,Fz1); // Vector de fuerza del rotor 1
+
+  double Fx2=-T2*sin(alfa2); // Componente en el eje x 
+  double Fz2=T2*cos(alfa2); // Componente en el eje z 
+  ignition::math::Vector3d f2(Fx2,0,Fz2); // Vector de fuerza del rotor 2
+
+  /*** Aplicación de los empujes ***/
+  // Se hace uso la siguiente función perteneciente a la API de Gazebo:
+  link_->AddLinkForce(f1,p1); // Aplica la fuerza f1 en la posición p1. Ambos expresados en ejes del cuerpo 
+  link_->AddLinkForce(f2,p2); // Aplica la fuerza f2 en la posición p2. Ambos expresados en ejes del cuerpo 
+
+
+  /*** Aplicación de los pares de reacción ***/
+  double taud1=cm*omega1*omega1; // Par generado por el rotor 1
+  double taud2=-cm*omega2*omega2; // Par generado por el rotor 2
+  ignition::math::Vector3d Taud1(taud1*sin(alfa1),0, taud1*cos(alfa1)); // Vector de par 1 
+  ignition::math::Vector3d Taud2(taud2*sin(alfa2),0, taud2*cos(alfa2)); // Vector de par 2 
+  link_->AddRelativeTorque(Taud1); // Se aplica el par 1 expresados en ejes cuerpo   
+  link_->AddRelativeTorque(Taud2); // Se aplica el par 2 expresados en ejes cuerpo 
+
+  // Por último, se envia un mensaje a un plugin de representación gráfica.
+  // Este se encarga de graficar unas rectas para saber la magnitud de los
+  // empujes y sus orientaciones
+  gazebo::msgs::Quaternion datos;
+  datos.set_x(Fx1);
+  datos.set_y(Fz1);
+  datos.set_z(Fx2);
+  datos.set_w(Fz2);
+  linea_pub_->Publish(datos);
 }
 
 bool GazeboMavlinkInterface::IsRunning()

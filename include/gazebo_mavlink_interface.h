@@ -211,6 +211,7 @@ private:
 
   transport::NodePtr node_handle_;
   transport::PublisherPtr motor_velocity_reference_pub_;
+  transport::PublisherPtr linea_pub_;
   transport::SubscriberPtr mav_control_sub_;
 
   physics::ModelPtr model_;
@@ -222,6 +223,7 @@ private:
   physics::JointPtr gimbal_yaw_joint_;
   physics::JointPtr gimbal_pitch_joint_;
   physics::JointPtr gimbal_roll_joint_;
+  physics::LinkPtr link_;
   common::PID propeller_pid_;
   common::PID elevator_pid_;
   common::PID left_elevon_pid_;
@@ -262,6 +264,7 @@ private:
   void pollFromQgcAndSdk();
   void SendSensorMessages();
   void handle_control(double _dt);
+  void handle_control_2(double _dt);
   bool IsRunning();
   void onSigInt();
 
@@ -400,5 +403,10 @@ private:
   bool hil_state_level_;
 
   std::atomic<bool> gotSigInt_ {false};
+
+  FirstOrderFilter<double> filtro_motor1= FirstOrderFilter<double>(0.01,0.01,0);
+  FirstOrderFilter<double> filtro_motor2= FirstOrderFilter<double>(0.01,0.01,0);
+  common::Time tiempo_aux=0;
+  
 };
 }
